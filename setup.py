@@ -1,8 +1,8 @@
 from distutils.core import setup
 setup(
-  name = 'EPICS-CA',
-  packages = ['CA.py'], 
-  version = '2.0.3.3',
+  name = 'CA',
+  packages = ['EPICS_CA'], 
+  version = '2.0.3.4',
   description = 'EPICS Channel Access Protocol',
   author = 'Friedrich',
   author_email = 'friedrich.schotte@gmail.com',
