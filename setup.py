@@ -1,11 +1,12 @@
 from distutils.core import setup
 setup(
   name = 'EPICS-CA',
-  packages = ['EPICS_CA'], 
-  data_files = [(".",["EPICS_CA.pth"])],
-  version = '2.0.3.7',
+  packages=[""],
+  package_dir={"":"EPICS_CA"},
+  extra_path = "EPICS_CA",
+  version = '2.0.3.14',
   description = 'EPICS Channel Access Protocol',
-  author = 'Friedrich',
+  author = 'Friedrich Schotte',
   author_email = 'friedrich.schotte@gmail.com',
   url = 'https://github.com/friedrich-schotte/ca_python',
   download_url = 'https://github.com/friedrich-schotte/ca_python/archive/2.0.3.tar.gz',
