@@ -1,7 +1,7 @@
 from distutils.core import setup
 setup(
   name = 'EPICS-CA',
-  packages = ['CA'], # this must be the same as the name above
+  packages = ['CA.py'], 
   version = '2.0.3.3',
   description = 'EPICS Channel Access Protocol',
   author = 'Friedrich',
