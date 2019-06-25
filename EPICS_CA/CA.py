@@ -15,28 +15,36 @@
 #
 """
 EPICS Channel Access Protocol
-https://github.com/friedrich-schotte/ca_python
+https://github.io/python_ca
 
 Author: Friedrich Schotte
-Date created: 4/26/2009
-Date last modified: 4/1/2017
-Python Version: 2.7
+Date created: 2009-04-26
+Date last modified: 2019-06-24
+Python Version: 2.7 and 3.7
 
 Based on: 'Channel Access Protocol Specification', version 4.11
 http://epics.cosylab.com/cosyjava/JCA-Common/Documentation/CAproto.html
+
+To do:
+- EPICS_CA_ADDR_LIST space separated list of dot-format IP addresses,
+  e.g. % setenv EPICS_CA_ADDR_LIST "1.2.3.255 8.9.10.255"
+  https://epics.anl.gov/EpicsDocumentation/AppDevManuals/ChannelAccess/cadoc_4.htm
+  (EPICS R3.12 Channel Access Reference Manual,
+  Chapter 1.3.2 Configuring CA for Multiple Subnets)
 """
+__version__ = "3.3.1" # Python 3: using "bytes" for binary data
+
 __authors__ = ["Friedrich Schotte"]
 __credits__ = []
 __license__ = "GPLv3+"
-__version__ = "2.0.3" # efficient background thread
 __status__ = "Prototype"
 
 import socket
-from logging import debug
+from logging import debug,info,warn,error
 
 timeout = 1.0 # s
 DEBUG = False # Generate diagnostics messages?
-monitor_always = False # run server communication alsways in background
+monitor_always = True # run server communication alsways in background
 
 class PV_info:
     """State information for each process variable"""
@@ -51,7 +59,7 @@ class PV_info:
         self.channel_ID = None # client-provided reference number for PV
         self.channel_SID = None # server-provided reference number for PV
         self.data_type = None # DOUBLE,INT,STRING,...
-        self.data_count = None # 1 if a scalar, >1 if an array
+        self.data_count = None # 1 if. a scalar, >1 if an array
         self.access_bits = None # premissions bit map (bit 0: read, 1: write)
         self.IOID = 0 # last used read/write transaction reference number
         self.subscription_ID = None # locally assiged reference number for server updates
@@ -65,6 +73,26 @@ class PV_info:
         self.callbacks = [] # for "camonitor"
         self.writers = [] # for "camonitor"
 
+    def reset(self):
+        """Use if connection to IOC was lost"""
+        self.connection_initiated = 0 
+        self.servers_queried = [] 
+        self.addr = None 
+        self.channel_ID = None 
+        self.channel_SID = None 
+        self.data_type = None 
+        self.data_count = None 
+        self.access_bits = None 
+        self.IOID = 0 
+        self.subscription_ID = None 
+        self.response_time = 0 
+        self.data = None 
+        self.last_updated = 0 
+        self.write_data = None 
+        self.write_requested = 0 
+        self.write_sent = 0 
+        self.write_confirmed = 0
+
     def __str__(self):
         s = "PV_info:"
         for attr in dir(self):
@@ -75,9 +103,11 @@ class PV_info:
 PVs = {} # Unique list of active process variables
 
 class connection_info:
-    "Per CA server (IOC) state information"
-    socket = None
-    access_bits = None
+    """Per CA server (IOC) state information"""
+    def __init__(self):
+        self.socket = None
+        self.access_bits = None
+        self.input_buffer = b""
     
 connections = {} # list of known CA servers (IOCs)
 
@@ -92,6 +122,41 @@ minor_version = 11
 port = 5056 + major_version * 2
 
 # CA Message command codes:
+
+commands = {
+    "VERSION": 0,
+    "EVENT_ADD": 1,
+    "EVENT_CANCEL": 2,
+    "READ": 3,
+    "WRITE": 4,
+    "SNAPSHOT": 5,
+    "SEARCH": 6,
+    "BUILD": 7,
+    "EVENTS_OFF": 8,
+    "EVENTS_ON": 9,
+    "READ_SYNC": 10,
+    "ERROR": 11,
+    "CLEAR_CHANNEL": 12,
+    "RSRV_IS_UP": 13,
+    "NOT_FOUND": 14,
+    "READ_NOTIFY": 15,
+    "READ_BUILD": 16,
+    "CREATE_CHAN": 18,
+    "WRITE_NOTIFY": 19,
+    "CLIENT_NAME": 20,
+    "HOST_NAME": 21,
+    "ACCESS_RIGHTS": 22,
+    "ECHO": 23,
+    "SIGNAL": 25,
+    "CREATE_CH_FAIL": 26,
+    "SERVER_DISCONN": 27,
+}
+
+def command_name(command_code):
+    """'VERSION', 'EVENT_ADD',.... """
+    if not command_code in commands.values(): return str(command_code)
+    return commands.keys()[commands.values().index(command_code)]
+
 VERSION = 0
 EVENT_ADD = 1
 EVENT_CANCEL = 2
@@ -105,22 +170,58 @@ HOST_NAME = 21
 CREATE_CHAN = 18
 ACCESS_RIGHTS = 22
 
-commands = {
-    "VERSION": 0,
-    "EVENT_ADD": 1,
-    "EVENT_CANCEL": 2,
-    "WRITE": 4,
-    "SEARCH": 6,
-    "NOT_FOUND": 14,
-    "READ_NOTIFY": 15,
-    "WRITE_NOTIFY": 19,
-    "CLIENT_NAME": 20,
-    "HOST_NAME": 21,
-    "CREATE_CHAN": 18,
-    "ACCESS_RIGHTS": 22,
+# CA Payload Data Types:
+
+types = {
+    "STRING": 0,
+    "SHORT": 1,
+    "FLOAT": 2,
+    "ENUM": 3,
+    "CHAR": 4,
+    "LONG": 5,
+    "DOUBLE": 6,
+    "STS_STRING": 7,
+    "STS_SHORT": 8,
+    "STS_FLOAT": 9,
+    "STS_ENUM": 10,
+    "STS_CHAR": 11,
+    "STS_LONG": 12,
+    "STS_DOUBLE": 13,
+    "TIME_STRING": 14,
+    "TIME_SHORT": 15,
+    "TIME_FLOAT": 16,
+    "TIME_ENUM": 17,
+    "TIME_CHAR": 18,
+    "TIME_LONG": 19,
+    "TIME_DOUBLE": 20,
+    "GR_STRING": 21,
+    "GR_SHORT": 22,
+    "GR_FLOAT": 23,
+    "GR_ENUM": 24,
+    "GR_CHAR": 25,
+    "GR_LONG": 26,
+    "GR_DOUBLE": 27,
+    "CTRL_STRING": 28,
+    "CTRL_SHORT": 29,
+    "CTRL_FLOAT": 30,
+    "CTRL_ENUM": 31,
+    "CTRL_CHAR": 32,
+    "CTRL_LONG": 33,
+    "CTRL_DOUBLE": 34,
 }
 
-# CA Message data type codes:
+def type_name(data_type):
+    """Channel Access data type as string. data_type: integer number"""
+    if not data_type in types.values(): return str(data_type)
+    return list(types.keys())[list(types.values()).index(data_type)]
+
+def type_code(name):
+    if name in types: code = types[name]
+    else:
+        warn("CA: Type %r not implemented yet. Using STRING instead." % name)
+        code = 0
+    return code
+
 STRING = 0
 INT = 1
 SHORT = 1
@@ -129,26 +230,13 @@ ENUM = 3
 CHAR = 4
 LONG = 5
 DOUBLE = 6
-NO_ACCESS = 7
-
-types = {
-    "STRING": 0,
-    "INT": 1,
-    "SHORT": 1,
-    "FLOAT": 2,
-    "ENUM": 3,
-    "CHAR": 4,
-    "LONG": 5,
-    "DOUBLE": 6,
-    "NO_ACCESS": 7,
-}
 
 # CA Message monitor mask bits
 VALUE = 0x01 # Value change events are reported.
 LOG   = 0x02 # Log events are reported (different dead band than VALUE)
 ALARM = 0x04 # Alarm events are reported
 
-class PV (object):
+class PV(object):
     """EPICS Process Variable or
     a collections of process variable with common prefix"""
     def __init__(self,name):
@@ -175,16 +263,18 @@ class PV (object):
 
     def __repr__(self): return "PV(%r)" % self.name
 
-    def add_callback(self,callback):
+    def add_callback(self,callback,new_thread=True):
         """Have the routine 'callback' be called every the time value
         of the PV changes.
         callback: function that takes three parameters:
         PV_name, value, char_value"""
-        camonitor(self.name,callback=callback)
+        camonitor(self.name,callback=callback,new_thread=new_thread)
+    monitor = add_callback
 
-    def clear_callbacks(self,callback):
+    def clear_callbacks(self,callback=None):
         """Undo 'add_callback'."""
         camonitor_clear(self.name)
+    monitor_clear = clear_callbacks
 
 
 class Record(object):
@@ -220,7 +310,7 @@ class Record(object):
         if (name.startswith("__") and name.endswith("__")):
             object.__setattr__(self,name,value)
             return
-        if name in self.__dict__ or name in self.__class__.__dict__:
+        if name in self.__dict__ or hasattr(type(self),name):
             object.__setattr__(self,name,value)
             return
         ##debug("Record: caput(%r,%r)" % (self.__prefix__+"."+name,value))
@@ -248,8 +338,10 @@ def caget(PV_name,timeout=None,wait=None):
     if wait == False: timeout = 0
     
     camonitor_background()
-    if not PV_name in PVs: PVs[PV_name] = PV_info(); process_replies(update=True)
-    process_replies()
+    if not PV_name in PVs:
+        PVs[PV_name] = PV_info()
+        if timeout > 0: process_replies(update=True)
+    if timeout > 0: process_replies()
     pv = PVs[PV_name]
     while pv.data is None and time() - pv.connection_requested < timeout:
         process_replies()
@@ -258,7 +350,7 @@ def caget(PV_name,timeout=None,wait=None):
 
     return v
 
-def caput(PV_name,value,wait=False,timeout=60):
+def caput(PV_name,value,wait=False,timeout=None):
     """Modify the value of a process variable
     If wait=True the call returns only after the server has confirmed
     that is has finished processing the write request or the timeout
@@ -266,6 +358,7 @@ def caput(PV_name,value,wait=False,timeout=60):
     from time import time
     if timeout is None: timeout = globals()["timeout"]
     
+    ##camonitor_background()
     if not PV_name in PVs: PVs[PV_name] = PV_info()
     
     pv = PVs[PV_name]
@@ -302,10 +395,11 @@ def cawait(PV_name,timeout=None):
     while pv.last_updated == last_updated and time()-t0 < timeout:
         process_replies()
 
-def camonitor(PV_name,writer=None,callback=None):
+def camonitor(PV_name,writer=None,callback=None,new_thread=True):
     """Call a function every time a PV changes value.
     writer: function that will be passed a formatted string:
     "<PB_name> <date> <time> <value>"
+    new_thread: start callback in new thread?
     E.g. "14IDB:SAMPLEZ.RBV 2013-11-02 18:25:13.555540 4.3290"
     f=file("PV.log","w"); camonitor("14IDB:SAMPLEZ.RBV",f.write)
     callback: function that will be passed three arguments:
@@ -322,43 +416,109 @@ def camonitor(PV_name,writer=None,callback=None):
         writer = sys.stdout.write
         
     if callback is not None:
-        if not callback in pv.callbacks: pv.callbacks += [callback]
+        if not has_callback(PV_name,callback): 
+            pv.callbacks += [Callback(callback,new_thread)]
+        elif DEBUG: warn("camonitor: %r already has %r as callback." %
+            (PV_name,object_name(callback)))
     if writer is not None:
         if not writer in pv.writers: pv.writers += [writer]
 
     camonitor_background()
 
-def camonitor_clear(PV_name):
+def camonitor_clear(PV_name,writer=None,callback=None):
     """Undo "camonitor" """
-    for PV_name in PVs: 
+    if PV_name in PVs: 
         pv = PVs[PV_name]
-        pv.callbacks = []
-        pv.writers = []
+        if writer is None: pv.writers = []
+        elif writer in pv.writers: pv.writers.remove(writer)
+        if callback is None: pv.callbacks = []
+        else:
+            for f in pv.callbacks:
+                if f == callback: pv.callbacks.remove(f)
+                elif hasattr(f,"function") and f.function == callback:
+                    pv.callbacks.remove(f)
 
-camonitor_thread_ID = None
+def camonitors(PV_name=None):
+    """Which monotors are set to a PV?
+    List of active callback functions"""
+    if PV_name is not None: PV_names = [PV_name] if PV_name in PVs.keys() else []
+    else: PV_names = PVs.keys()
+    
+    camonitors = []
+    for PV_name in PV_names: 
+        pv = PVs[PV_name]
+        for f in pv.callbacks+pv.writers:
+            if hasattr(f,"function"): f = f.function
+            camonitors += [f]    
+    return camonitors
+
+def has_callback(PV_name,callback):
+    if not PV_name in PVs: PVs[PV_name] = PV_info(); process_replies(update=True)
+    pv = PVs[PV_name]
+    for f in pv.callbacks:
+        if f == callback: return True
+        if hasattr(f,"function") and f.function == callback: return True
+    return False
+
+class Callback(object):
+    def __init__(self,function,new_thread=False):
+        self.function = function
+        self.new_thread = new_thread
+
+    def __call__(self,*args):
+        if self.new_thread: function = new_thread_function(self.function)
+        else: function = self.function
+        function(*args)
+
+    @property
+    def argcount(self): return len(self.args)
+
+    @property
+    def args(self):
+        from inspect import getargspec, ismethod
+        args = getargspec(self.function).args
+        if ismethod(self.function): args = args[1:]
+        return args
+
+def call(function,args,new_thread=False):
+    """Run a procedure that does not return a value
+    args: argument passed as tuple
+    new_thread: do not wait for mcompletion
+    """
+    if new_thread: function = new_thread_function(function)
+    function(*args)
+
+def new_thread_function(function):
+    """A function that runs the lorginal function in a new thread"""
+    from threading import Thread
+    import traceback
+    def function_error_logged(*args):
+        try: function(*args)
+        except Exception as msg: error("%s: %s\n%s" %
+            (object_name(function),msg,traceback.format_exc()))
+    def new_thread_function(*args):
+        task = Thread(target=function_error_logged,args=args)
+        task.daemon = True
+        task.start()
+    new_thread_function.function = function
+    return new_thread_function
+
+camonitor_thread = None
 
 def camonitor_background():
     """Handle IOC communication in background"""
-    global camonitor_thread_ID
-    if camonitor_thread_ID is None:
-        from thread import start_new_thread
-        camonitor_thread_ID = start_new_thread (camonitor_thread,())
+    from threading import Thread
+    global camonitor_thread
+    if camonitor_thread is None or not camonitor_thread.isAlive():
+        camonitor_thread = Thread(target=camonitor_loop)
+        camonitor_thread.daemon = True
+        camonitor_thread.start()
 
-def camonitor_thread():
+def camonitor_loop():
     """Perform montitoring to triggger call of registered callback
     routines."""
     while (camonitors() or (monitor_always and PVs)) and process_replies:
        process_replies(1.0)
-    global camonitor_thread_ID
-    camonitor_thread_ID = None
-
-def camonitors():
-    """List of active callback routines"""
-    camonitors = []
-    for PV_name in PVs.keys(): 
-        pv = PVs[PV_name]
-        camonitors += pv.callbacks+pv.writers
-    return camonitors 
 
 def socketpair(family=socket.AF_INET,type=socket.SOCK_STREAM,proto=0):
     """Create a pair of connected socket objects using TCP/IP protocol.
@@ -379,7 +539,7 @@ def socketpair(family=socket.AF_INET,type=socket.SOCK_STREAM,proto=0):
     return s1,s2
 
 # Used to wake up the CA background (server) thread
-request_sockets = socketpair()
+request_sockets = [None,None]
 
 def PV_server_discover(PV_name):
     """Send UDP broadcast to find the server hosting a PV
@@ -399,16 +559,14 @@ def PV_server_discover(PV_name):
         reply_flag = 5 # Do not reply
         if pv.channel_ID == None: pv.channel_ID = new_channel_ID()
         request = message(SEARCH,0,reply_flag,minor_version,pv.channel_ID,
-            pv.channel_ID,PV_name+"\0")
+            pv.channel_ID,str.encode(PV_name,"ascii")+b"\0")
         for addr in broadcast_addresses():
             sendto(UDP_socket,(addr,port),request)
             pv.servers_queried += [addr]
         # updates PV.addr, then calls "PV_connect"
 
 def PV_connect(PV_name):
-    """Translate PV name from string to server-specific channel ID.
-    PV_name: string"""
-    PV_server_connect(PV_name) # make sure ocnnection to server is established.
+    PV_server_connect(PV_name) # make sure connection to server is established.
     if PV_name in PVs:
         pv = PVs[PV_name]
         if pv.addr and pv.addr in connections and pv.channel_SID is None:
@@ -416,7 +574,7 @@ def PV_connect(PV_name):
             s = connections[pv.addr].socket
             if pv.channel_ID == None: pv.channel_ID = new_channel_ID()
             send(s,message(CREATE_CHAN,0,0,0,pv.channel_ID,minor_version,
-                PV_name+"\0"))
+                str.encode(PV_name,"ascii")+b"\0"))
             # updates pv.channel_SID, then calls "PV_subscribe"
 
 def PV_server_connect(PV_name):
@@ -431,7 +589,7 @@ def PV_server_connect(PV_name):
             s = socket()
             s.settimeout(timeout)
             try: s.connect((addr,cport))
-            except error,msg:
+            except error as msg:
                 if DEBUG: debug("%s:%r: %r" % (addr,cport,msg))
                 return
             except socket_timeout:
@@ -440,8 +598,8 @@ def PV_server_connect(PV_name):
             connections[addr,cport] = connection_info()
             connections[addr,cport].socket = s
             send(s,message(VERSION,0,10,minor_version,0,0)) # 10 = priority
-            send(s,message(CLIENT_NAME,0,0,0,0,0,getuser()))
-            send(s,message(HOST_NAME,0,0,0,0,0,gethostname()))
+            send(s,message(CLIENT_NAME,0,0,0,0,0,str.encode(getuser(),"ascii")+b"\0"))
+            send(s,message(HOST_NAME,0,0,0,0,0,str.encode(gethostname(),"ascii")+b"\0"))
 
 def PV_subscribe(PV_name):
     """Ask the server to be notified about when the value of a PV changes.
@@ -453,13 +611,16 @@ def PV_subscribe(PV_name):
             and pv.addr in connections:
             s = connections[pv.addr].socket
             pv.subscription_ID = new_subscription_ID()
-            send(s,message(EVENT_ADD,16,pv.data_type,pv.data_count,pv.channel_SID,
+            type = type_name(pv.data_type)
+            if not "_" in type: type = "TIME_"+type
+            data_type = type_code(type)
+            send(s,message(EVENT_ADD,16,data_type,pv.data_count,pv.channel_SID,
                 pv.subscription_ID,pack(">fffHxx",0.0,0.0,0.0,VALUE|LOG|ALARM))) 
 
-from thread import allocate_lock
-lock = allocate_lock()
+from threading import Lock
+lock = Lock()
 
-def process_replies(timeout = 0.001,update=False):
+def process_replies(timeout=0.0000001,update=False):
     """Interpret any packets comming from the IOC waiting in the system's
     receive queue.
     If timeout > 0 wait for more packets to arrive for the specified number
@@ -471,6 +632,7 @@ def process_replies(timeout = 0.001,update=False):
         import socket
         from select import select,error as select_error
         from struct import unpack
+        from math import ceil
 
         process_pending_connection_requests()
         process_pending_write_requests()
@@ -521,28 +683,47 @@ def process_replies(timeout = 0.001,update=False):
                 if s in ready_to_read:
                     # Several replies may be concatenated. Read one at a time.
                     # The minimum message size is 16 bytes.
-                    try: message = s.recv(16)
+                    try: data_received = s.recv(65536)
                     except socket.error:
                         if DEBUG: debug("Recv: lost connection to server %s:%s" % addr)
                         reset_PVs(addr)
                         del connections[addr]
                         continue
-                    if len(message) == 0:
+                    if len(data_received) == 0:
                         if DEBUG: debug("Server %s:%s closed connection" % addr)
                         reset_PVs(addr)
                         del connections[addr]
                         break
-                    # If the 'payload size' field has value > 0, 'payload size'
-                    # more bytes are part of the message.
-                    payload_size, = unpack(">H",message[2:4])
-                    if payload_size > 0:
-                        try: message += s.recv(payload_size)
-                        except socket.timeout:
-                            if DEBUG: debug("Recv timed out")
-                    if DEBUG: debug("Recv %s:%s %s" % (addr[0],addr[1],
-                        message_info(message)))
-                    process_message(addr,message)
-                
+                    if DEBUG: debug("CA: Received %d bytes" % len(data_received))
+                    connection.input_buffer += data_received
+                    ##if DEBUG: debug("CA: Added %d bytes to input buffer, now %d bytes" %
+                    ##     (len(data_received),len(connection.input_buffer)))
+                    min_message_size = 16
+                    while len(connection.input_buffer) >= min_message_size:
+                        # If the 'payload size' field has value > 0, 'payload size'
+                        # more bytes are part of the message.
+                        payload_size = unpack(">H",connection.input_buffer[2:4])[0]
+                        pad_unit = 8
+                        padded_payload_size = \
+                            int(ceil(payload_size/float(pad_unit))*pad_unit)
+                        ##if DEBUG: debug("CA: Payload %d bytes, padded to %d bytes" %
+                        ##    (payload_size,padded_payload_size))
+                        message_size = min_message_size+padded_payload_size
+                        if len(connection.input_buffer) < message_size:
+                            ##if DEBUG: debug("CA: Message incomplete %d/%d bytes" %
+                            ##     (len(connection.input_buffer),message_size))
+                            break
+                        message,connection.input_buffer = \
+                            connection.input_buffer[0:message_size],connection.input_buffer[message_size:]
+                        ##if DEBUG: debug("CA: Removed %d bytes from input buffer, %d left" %
+                        ##     (message_size,len(connection.input_buffer)))
+                        ##if DEBUG: debug("CA: Processing %d bytes..." % len(message))
+                        if DEBUG: debug("CA: Received "+message_info(message))
+                        process_message(addr,message)
+                        ##if DEBUG: debug("CA: Processed %d bytes" % len(message))
+                    ##if DEBUG: debug("CA: %d bytes remaining in input buffer" %
+                    ##    len(connection.input_buffer))
+               
             process_pending_connection_requests()
             process_pending_write_requests()
             
@@ -554,7 +735,8 @@ def process_replies(timeout = 0.001,update=False):
         sleep(timeout)
 
 wake_up_in_progress = False
-wake_up_lock = allocate_lock()
+from threading import Lock
+wake_up_lock = Lock()
 
 def wake_up():
     """Make sure 'process_replies' handles pending connection and write requests"""
@@ -562,12 +744,13 @@ def wake_up():
         global wake_up_in_progress
         if not wake_up_in_progress:
             wake_up_in_progress = True
-            request_sockets[0].send(".")
+            if request_sockets[0] is None: request_sockets[:] = socketpair()
+            request_sockets[0].send(b".")
 
 def process_pending_connection_requests():
     """Check list of PVs unconnected PVs and conntect them."""
     from time import time
-    for name in PVs.keys():
+    for name in list(PVs.keys()):
         pv = PVs[name]
         # Does PV need to be connected?
         ##if time() - pv.last_connection_requested > timeout: continue 
@@ -582,7 +765,7 @@ def process_pending_connection_requests():
 def process_pending_write_requests():
     """Check list of PVs for pending write requests and execute them when possible."""
     from time import time
-    for name in PVs.keys():
+    for name in list(PVs.keys()):
         pv = PVs[name]
         if pv.write_data == None: continue # nothing to do
         if pv.addr == None: continue # need to postpone
@@ -593,18 +776,29 @@ def process_pending_write_requests():
         s = connections[pv.addr].socket
         pv.IOID = pv.IOID + 1
         pv.write_confirmed = 0
-        
-        data = network_data(pv.write_data,pv.data_type)
-        count = data_count(pv.write_data,pv.data_type)
-        send(s,message(WRITE_NOTIFY,0,pv.data_type,count,
+
+        data_type = base_type(pv.data_type)
+        data = network_data(pv.write_data,data_type)
+        count = data_count(pv.write_data,data_type)
+        send(s,message(WRITE_NOTIFY,0,data_type,count,
             pv.channel_SID,pv.IOID,data))
         pv.write_sent = time()
         pv.write_data = None
+
+def base_type(data_type):
+    """TIME_DOUBLE -> DOUBLE
+    data_type: integer code
+    """
+    type = type_name(data_type)
+    type = type.replace("TIME_","")
+    base_type = type_code(type)
+    return base_type
 
 def process_message(addr,message):
     """Interpret a CA protocol datagram"""
     from struct import unpack
     from time import time
+    import traceback
 
     header = message[0:16]
     payload = message[16:]
@@ -620,7 +814,7 @@ def process_message(addr,message):
         channel_ID = parameter2
         if DEBUG: debug("SEARCH port_number=%r, channel_ID=%r, channel_SID=%r" %
             (port_number,channel_ID,channel_SID))
-        for name in PVs.keys():
+        for name in list(PVs.keys()):
             if PVs[name].channel_ID == channel_ID:
                 # Ignore duplicate replies.
                 if PVs[name].addr != None:
@@ -636,7 +830,7 @@ def process_message(addr,message):
         channel_SID = parameter2
         if DEBUG: debug("CREATE_CHAN channel_ID=%r, channel_SID=%r" %
             (channel_ID,channel_SID))
-        for name in PVs.keys():
+        for name in list(PVs.keys()):
             if PVs[name].channel_ID == channel_ID:
                 if PVs[name].channel_SID != None:
                     if DEBUG: debug("Ignoring duplicate CREATE_CHAN reply for %r from "
@@ -657,7 +851,7 @@ def process_message(addr,message):
         channel_ID = parameter1
         access_bits = parameter2
         if DEBUG: debug("ACCESS_RIGHTS channel_ID %r, %s" % (channel_ID,access_bits))
-        for name in PVs.keys():
+        for name in list(PVs.keys()):
             if PVs[name].channel_ID == channel_ID:
                 PVs[name].access_bits = access_bits
                 if DEBUG: debug("PVs[%r].access_bits = %r" % (name,access_bits))
@@ -672,7 +866,7 @@ def process_message(addr,message):
         val = value(data_type,data_count,payload)
         if DEBUG: debug("READ_NOTIFY channel_SID=%r, IOID=%r, value=%r" %
             (channel_SID,IOID,val))
-        for name in PVs.keys():
+        for name in list(PVs.keys()):
             if PVs[name].channel_SID == channel_SID:
                 if DEBUG: debug("PVs[%r].data = %r" % (name,payload))
                 PVs[name].data = payload
@@ -683,19 +877,21 @@ def process_message(addr,message):
         status_code = parameter1
         subscription_ID = parameter2
         val = value(data_type,data_count,payload)
-        if DEBUG: debug("EVENT_ADD status_code=%r, subscription_ID=%r, value=%r" % (status_code,
-            subscription_ID,val))
-        for name in PVs.keys():
+        t = timestamp(data_type,payload)
+        response_time = time()
+        if DEBUG: debug("EVENT_ADD status_code=%r, subscription_ID=%r, "\
+            "data_count=%r, value=%r" %
+            (status_code,subscription_ID,data_count,val))
+        for name in list(PVs.keys()):
             if PVs[name].subscription_ID == subscription_ID and \
                 PVs[name].addr == addr:
                 update = True if PVs[name].data is not None else False
                 PVs[name].data_type = data_type
                 PVs[name].data_count = data_count
                 if DEBUG: debug("PVs[%r].data = %r" % (name,payload))
-                t = time()
                 if PVs[name].data != None: PVs[name].last_updated = t
                 PVs[name].data = payload
-                PVs[name].response_time = t
+                PVs[name].response_time = response_time
                 # Call any callback routines for this PV.
                 pv = PVs[name]
                 if len(pv.callbacks) > 0 or len(pv.writers) > 0:
@@ -703,24 +899,26 @@ def process_message(addr,message):
                     new_value = value(pv.data_type,pv.data_count,pv.data)
                     char_value = "%r" % new_value
                     if DEBUG: debug("%s = %s" % (name,char_value))
-                    # Run the callback function in a separate thread to avoid
-                    # deadlock in case the function calls "caput" or "caget".
-                    from thread import start_new_thread
                     for function in pv.callbacks:
                         if DEBUG: debug("%s: calling %s" % (name,object_name(function)))
-                        start_new_thread(function,(name,new_value,char_value))
+                        args = (name,new_value,char_value,t)[0:function.argcount]
+                        try: function(*args)
+                        except Exception as msg: error("%s: calling %s: %s\n%s" %
+                            (name,object_name(function),msg,traceback.format_exc()))
                     from datetime import datetime
                     message = "%s %s %s\n" % (name,datetime.fromtimestamp(t),
                         char_value)
                     for function in pv.writers:
                         if DEBUG: debug("%s: calling %s" % (name,object_name(function)))
-                        function(message)
+                        try: function(message)
+                        except Exception as msg: error("%s: calling %s: %s\n%s" %
+                            (name,object_name(function),msg,traceback.format_exc()))
     elif command == EVENT_CANCEL: # Asynchronous notification that PV not longer exists.
         channel_SID = parameter1
         subscription_ID = parameter2
         if DEBUG: debug("EVENT_CANCEL channel_SID=%r, subscription_ID=%r" %
             (channel_SID,subscription_ID))
-        for name in PVs.keys():
+        for name in list(PVs.keys()):
             if PVs[name].subscription_ID == subscription_ID and \
                 PVs[name].addr == addr:
                 del PVs[name]
@@ -728,7 +926,7 @@ def process_message(addr,message):
         status = parameter1
         IOID = parameter2
         if DEBUG: debug("WRITE_NOTIFY status_code=%r, IOID=%r" % (status,IOID))
-        for name in PVs.keys():
+        for name in list(PVs.keys()):
             if PVs[name].IOID == IOID and \
                 PVs[name].addr == addr:
                 t = time()
@@ -738,11 +936,13 @@ def process_message(addr,message):
     elif command == NOT_FOUND:
         channel_ID = parameter1
         PV_name = "unknown"
-        for name in PVs.keys():
+        for name in list(PVs.keys()):
             if PVs[name].channel_ID == channel_ID: PV_name = name
         if DEBUG: debug("NOT_FOUND: %r" % PV_name)
+    elif command == VERSION:
+        if DEBUG: debug("got command VERSION")
     else:
-        if DEBUG: debug("%r: unknown command code" % command)
+        warn("CA: Command %s not yet implemented." % command_name(0))
 
 def object_name(object):
     """Convert Python object to string"""
@@ -771,10 +971,14 @@ def new_subscription_ID():
 def reset_PVs(addr):
     """If the connection to the server 'addr' is lost, clear outdate PV state
     info."""
-    for name in PVs.keys(): PVs[name] = PV_info()
+    # TO DO: preserve callbacks
+    for name in list(PVs.keys()):
+        if PVs[name].addr == addr:
+            if DEBUG: debug("Resetting PV %r (address %s:%s)" % (name,addr[0],addr[1]))
+            PVs[name].reset()
 
 def message(command=0,payload_size=0,data_type=0,data_count=0,
-        parameter1=0,parameter2=0,payload=""):
+        parameter1=0,parameter2=0,payload=b""):
     """Assemble a Channel Access message datagram for network transmission"""
     assert data_type is not None
     assert data_count is not None
@@ -784,11 +988,15 @@ def message(command=0,payload_size=0,data_type=0,data_count=0,
     from math import ceil
     from struct import pack
 
+    # If Python 3, force conversion of "str" to "bytes" object, because "str"
+    # and "bytes" cannot be concatenated.
+    if not isinstance(payload,bytes): payload = str.encode(payload,"iso-8859-1")
+
     if payload_size == 0 and len(payload) > 0:
         # Pad to multiple of 8.
         payload_size = int(ceil(len(payload)/8.)*8)
         
-    while len(payload) < payload_size: payload += "\0"
+    while len(payload) < payload_size: payload += b"\0"
 
     # 16-byte header consisting of four 16-bit integers
     # and two 32-bit integers in big-edian byte order.
@@ -826,7 +1034,7 @@ def send(socket,message):
     addr,port = socket.getpeername()
     if DEBUG: debug("Send %s:%s %s" % (addr,port,message_info(message)))
     try: socket.sendall(message)
-    except socket_error,error:
+    except socket_error as error:
         if DEBUG: debug("Send failed: %r" % error)
 
 def sendto(socket,addr,message):
@@ -834,46 +1042,123 @@ def sendto(socket,addr,message):
     from socket import error as socket_error
     if DEBUG: debug("Send UDP %s:%s %s" % (addr[0],addr[1],message_info(message)))
     try: socket.sendto(message,addr)
-    except socket_error,error:
+    except socket_error as error:
         if DEBUG: debug("Sendto %r failed: %r" % (addr,error))
 
+def timestamp(data_type,payload):
+    """Extract time stamp from network binary data
+    data_type: integer data type code
+    Return value: seconds since 1970-01-01T00:00:00Z"""
+    from time import time
+    if payload is not None: 
+        data_type = type_name(data_type)
+        header_size = 12
+        if data_type.startswith("TIME_") and len(payload) >= header_size:
+            from struct import unpack
+            status,severity,seconds_since_1990_01_01,nanoseconds = \
+                unpack(">HHII",payload[0:header_size])
+            seconds_since_1970_01_01 = seconds_since_1990_01_01 + 631152000
+            timestamp = seconds_since_1970_01_01+nanoseconds*1e-9
+        else: timestamp = time()
+    else: timestamp = time()
+    return timestamp
+
+def has_timestamp(data_type,payload):
+    """Extract time stamp from network binary data
+    data_type: integer data type code
+    Return value: seconds since 1970-01-01T00:00:00Z"""
+    has_timestamp = False
+    if payload is not None: 
+        data_type = type_name(data_type)
+        header_size = 12
+        if data_type.startswith("TIME_") and len(payload) >= header_size:
+            has_timestamp = True
+    return has_timestamp
+
 def value(data_type,data_count,payload):
-    """Convert received network binary data to a Python data type"""
+    """Convert network binary data to a Python data type
+    data_type: integer data type code"""
     if payload == None: return None
     from struct import unpack
-    if data_type == STRING:
+    data_type = type_name(data_type)
+    
+    header_size = 0
+    if data_type.startswith("STS_"):
+        header_size = 2+2 # status,severity
+        # Add alignment padding to header.
+        if data_type.endswith("CHAR"):    header_size += 1       
+        elif data_type.endswith("DOUBLE"):header_size += 4
+    elif data_type.startswith("TIME_"):
+        header_size = 12
+        # Add alignment padding to header.
+        if data_type.endswith("SHORT"):   header_size += 2
+        elif data_type.endswith("ENUM"):  header_size += 2
+        elif data_type.endswith("CHAR"):  header_size += 3
+        elif data_type.endswith("DOUBLE"):header_size += 4
+    elif data_type.startswith("GR_"):
+        header_size = 2+2 # status,severity
+        if data_type.endswith("STRING"):  pass     
+        elif data_type.endswith("SHORT"): header_size += 8+6*2 # unit,limits    
+        elif data_type.endswith("FLOAT"): header_size += 2+2+8+6*4 # precision,pad,unit,limits   
+        elif data_type.endswith("ENUM"):  header_size += 2+16*26 # nstrings,strings      
+        elif data_type.endswith("CHAR"):  header_size += 8+6*1+1 # unit,limits,pad       
+        elif data_type.endswith("LONG"):  header_size += 8+6*4 # unit,limits
+        elif data_type.endswith("DOUBLE"):header_size += 2+2+8+6*8 # precision,pad,unit,limits
+        else:
+            if DEBUG: debug("value: data type %r not supported\n" % data_type)
+    elif data_type.startswith("CTRL_"):
+        header_size = 2+2 # status,severity
+        if data_type.endswith("STRING"):  pass     
+        elif data_type.endswith("SHORT"): header_size += 8+8*2 # unit,limits    
+        elif data_type.endswith("FLOAT"): header_size += 2+2+8+8*4 # precision,pad,unit,limits   
+        elif data_type.endswith("ENUM"):  header_size += 2+16*26 # nstrings,strings      
+        elif data_type.endswith("CHAR"):  header_size += 8+8*1+1 # unit,limits,pad       
+        elif data_type.endswith("LONG"):  header_size += 8+8*4 # unit,limits
+        elif data_type.endswith("DOUBLE"):header_size += 2+2+8+8*8 # precision,pad,unit,limits
+        else:
+            if DEBUG: debug("value: data type %r not supported\n" % data_type)
+
+    payload = payload[header_size:] # strip off header
+
+    if data_type.endswith("STRING"):
         # Null-terminated string.
         # data_count is the number of null-terminated strings (characters)
-        value = payload.split("\0")[0:data_count]
+        value = payload.split(b"\0")[0:data_count]
         if len(value) == 1: value = value[0]
-    elif data_type == SHORT:
-        payload = payload.ljust(2*data_count,"\0")
+    elif data_type.endswith("SHORT"):
+        if data_count > len(payload)/2: data_count = max(len(payload)/2,1)
+        payload = payload.ljust(2*data_count,b"\0")
         value = list(unpack(">%dh"%data_count,payload[0:2*data_count]))
         if len(value) == 1: value = value[0]
-    elif data_type == FLOAT:
-        payload = payload.ljust(4*data_count,"\0")
+    elif data_type.endswith("FLOAT"):
+        if data_count > len(payload)/4: data_count = max(len(payload)/4,1)
+        payload = payload.ljust(4*data_count,b"\0")
         value = list(unpack(">%df"%data_count,payload[0:4*data_count]))
         if len(value) == 1: value = value[0]
-    elif data_type == ENUM:
-        payload = payload.ljust(2*data_count,"\0")
+    elif data_type.endswith("ENUM"):
+        if data_count > len(payload)/2: data_count = max(len(payload)/2,1)
+        payload = payload.ljust(2*data_count,b"\0")
         value = list(unpack(">%dh"%data_count,payload[0:2*data_count]))
         if len(value) == 1: value = value[0]
-    elif data_type == CHAR:
-        payload = payload.ljust(data_count,"\0")
-        value = list(unpack("%db"%data_count,payload[0:data_count]))
+    elif data_type.endswith("CHAR"):
+        if data_count > len(payload)/1: data_count = max(len(payload)/1,1)
+        payload = payload.ljust(1*data_count,b"\0")
+        value = list(unpack("%db"%data_count,payload[0:1*data_count]))
         if len(value) == 1: value = value[0]
-    elif data_type == LONG:
-        payload = payload.ljust(4*data_count,"\0")
+    elif data_type.endswith("LONG"):
+        if data_count > len(payload)/4: data_count = max(len(payload)/4,1)
+        payload = payload.ljust(4*data_count,b"\0")
         value = list(unpack(">%di"%data_count,payload[0:4*data_count]))
         if len(value) == 1: value = value[0]
-    elif data_type == DOUBLE:
-        payload = payload.ljust(8*data_count,"\0")
+    elif data_type.endswith("DOUBLE"):
+        if data_count > len(payload)/8: data_count = max(len(payload)/8,1)
+        payload = payload.ljust(8*data_count,b"\0")
         value = list(unpack(">%dd"%data_count,payload[0:8*data_count]))
         if len(value) == 1: value = value[0]
-    elif data_type == None: value = payload
     else:
-        if DEBUG: debug("unsupported data type %r" % data_type)
+        if DEBUG: debug("value: unsupported data type %r\n" % data_type)
         value = payload
+
     return value
 
 def data_count(value,data_type):
@@ -883,47 +1168,121 @@ def data_count(value,data_type):
     # terminated strings, if the data type if CHAR the data count is the
     # number is characters in the string, including any NULL characters
     # inside and at the end.
-    if issubclass(type(value),basestring): return 1
-    if hasattr(value,"__len__"): return len(value)
-    return 1
+    if not isarray(value): return 1
+    else: return len(value)
 
 def network_data(value,data_type):
-    "Convert a Python data type to binary data for network transmission"
+    """Convert a Python data type to binary data for network transmission
+    data_type: integer number for CA payload data type (0 = STRING, 1 = SHORT)
+    """
     from struct import pack
-    from numpy import int8,int16,int32,float32,float64
-    
+    data_type = type_name(data_type)
     payload = ""
-    if data_type == STRING:
-        payload = str(value)
-        # EPICS requires that strings are NULL-terminated.
-        if not payload.endswith("\0"): payload += "\0"
-    elif data_type == SHORT:
-        if hasattr(value,"__len__"):
+
+    precision = 8 # Number of digits displayed in MEDM screen
+    
+    if data_type.startswith("STS_"):
+        status = 0 # 0 = normal
+        severity = 1 # 1 = success
+        payload += pack(">HH",status,severity)
+        # Add alignment padding to the header.
+        if data_type.endswith("CHAR"):     payload += "\0"       
+        elif data_type.endswith("DOUBLE"): payload += "\0"*4
+    elif data_type.startswith("TIME_"):
+        # Add time header
+        from time import mktime,time
+        status = 0 # 0 = normal
+        severity = 1 # 1 = sucess
+        # The time stamp is represented as two uint32 values. The first is the
+        # number of seconds passed since 1 Jan 1990 00:00 GMT. The second is the
+        # number of nanoseconds within the second.
+        offset = mktime((1990,1,1,0,0,0,0,0,0))-mktime((1970,1,1,0,0,0,0,0,0))
+        timestamp = time()-offset
+        seconds = int(timestamp)
+        nanoseconds = int((timestamp%1)*1e9)
+        payload += pack(">HHII",status,severity,seconds,nanoseconds)
+        # Add alignment padding to the header.
+        if data_type.endswith("SHORT"):    payload += "\0"*2
+        elif data_type.endswith("ENUM"):   payload += "\0"*2
+        elif data_type.endswith("CHAR"):   payload += "\0"*3
+        elif data_type.endswith("DOUBLE"): payload += "\0"*4
+    elif data_type.startswith("GR_"):
+        status = 0 # 0 = normal
+        severity = 1 # 1 = success
+        payload += pack(">HH",status,severity)
+        if data_type.endswith("STRING"): pass     
+        elif data_type.endswith("SHORT"):
+            payload += "\0"*(8+6*2) # unit,limits    
+        elif data_type.endswith("FLOAT"):
+            payload += pack(">h",precision)
+            payload += "\0"*(2+8+6*4) # pad,unit,limits
+        elif data_type.endswith("ENUM"):
+            payload += "\0"*(2+16*26) # number of strings,strings 
+        elif data_type.endswith("CHAR"):
+            payload += "\0"*(8+6*1+1) # unit,limits,pad      
+        elif data_type.endswith("LONG"):
+            payload += "\0"*(8+6*4) # unit,limits  
+        elif data_type.endswith("DOUBLE"):
+            payload += pack(">h",precision)
+            payload += "\0"*(2+8+6*8) # pad,unit,limits
+        else:
+            if DEBUG: debug("network_data: data type %r not supported\n" % data_type)
+    elif data_type.startswith("CTRL_"):
+        status = 0 # 0 = normal
+        severity = 1 # 1 = success
+        payload += pack(">HH",status,severity)
+        if data_type.endswith("STRING"): pass     
+        elif data_type.endswith("SHORT"):
+            payload += "\0"*(8+8*2) # unit,limits    
+        elif data_type.endswith("FLOAT"):
+            payload += pack(">h",precision)
+            payload += "\0"*(2+8+8*4) # pad,unit,limits
+        elif data_type.endswith("ENUM"):
+            payload += "\0"*(2+16*26) # number of strings,strings 
+        elif data_type.endswith("CHAR"):
+            payload += "\0"*(8+8*1+1) # unit,limits,pad      
+        elif data_type.endswith("LONG"):
+            payload += "\0"*(8+8*4) # unit,limits  
+        elif data_type.endswith("DOUBLE"):
+            payload += pack(">h",precision)
+            payload += "\0"*(2+8+8*8) # pad,unit,limits
+        else:
+            if DEBUG: debug("network_data: data type %r not supported\n" % data_type)
+
+    from numpy import int8,int16,int32,float32,float64
+
+    if data_type.endswith("STRING"):
+        if isarray(value):
+            # Null-separated strings.
+            payload += "\0".join([str(v) for v in value])
+        else: payload += str(value)
+    elif data_type.endswith("SHORT"):
+        if isarray(value):
             for v in value: payload += pack(">h",to(v,int16))
-        else: payload = pack(">h",to(value,int16))
-    elif data_type == FLOAT:
-        if hasattr(value,"__len__"):
+        else: payload += pack(">h",to(value,int16))
+    elif data_type.endswith("FLOAT"):
+        if isarray(value):
             for v in value: payload += pack(">f",to(v,float32))
-        else: payload = pack(">f",to(value,float32))
-    elif data_type == ENUM:
-        if hasattr(value,"__len__"):
+        else: payload += pack(">f",to(value,float32))
+    elif data_type.endswith("ENUM"):
+        if isarray(value):
             for v in value: payload += pack(">h",to(v,int16))
-        else: payload = pack(">h",to(value,int16))
-    elif data_type == CHAR:
-        if hasattr(value,"__len__"):
-            for v in value: payload += pack(">b",to(v,int8))
-        else: payload = pack(">b",to(value,int8))
-    elif data_type == LONG:
-        if hasattr(value,"__len__"):
+        else: payload += pack(">h",to(value,int16))
+    elif data_type.endswith("CHAR"):
+        if isarray(value):
+            for v in value: payload += pack("b",to(v,int8))
+        else: payload += pack("b",to(value,int8))
+    elif data_type.endswith("LONG"):
+        if isarray(value):
             for v in value: payload += pack(">i",to(v,int32))
-        else: payload = pack(">i",to(value,int32))
-    elif data_type == DOUBLE:
-        if hasattr(value,"__len__"):
+        else: payload += pack(">i",to(value,int32))
+    elif data_type.endswith("DOUBLE"):
+        if isarray(value):
             for v in value: payload += pack(">d",to(v,float64))
-        else: payload = pack(">d",to(value,float64))
+        else: payload += pack(">d",to(value,float64))
     else:
-        if DEBUG: debug("network_data: unsupported data type %r" % data_type)
-        payload = str(value)
+        if DEBUG: debug("network_data: unsupported data type %r\n" % data_type)
+        payload += str(value)
 
     return payload
 
@@ -934,17 +1293,66 @@ def to(value,dtype):
     try: return dtype(value)
     except: return 0 if not isfloat else 0.0
 
+def isarray(value):
+    """Is the value a container, like tuple, list or numpy array?"""
+    from six import string_types
+    if isinstance(value,string_types): return False
+    if hasattr(value,"__len__"): return True
+    else: return False
+
 def broadcast_addresses():
     """A list if IP adresses to use for name resolution broadcasts"""
+    addresses = []
     from os import environ
     if "EPICS_CA_AUTO_ADDR_LIST" in environ and \
-       environ["EPICS_CA_AUTO_ADDR_LIST"] == "NO": return []
+       environ["EPICS_CA_AUTO_ADDR_LIST"] == "NO": pass
+    else:
+        try: addresses += broadcast_addresses_psutil()
+        except ImportError: 
+            addresses += broadcast_addresses_standard()
+    addresses = list(set(addresses)) # eliminate duplicates
+    return addresses
 
-    # You can override the automatic selection of broadcast
-    # addresses by setting the variable 'broadcast_address'.
-    if "broadcast_address" in globals() and broadcast_address:
-        return [broadcast_address]
+def broadcast_addresses_psutil():
+    addresses = []
+    from psutil import net_if_addrs
+    interfaces = net_if_addrs()
+    for name in interfaces:
+        for info in interfaces[name]:
+            if info.family == 2: # family 2 = IPv4
+                if info.broadcast is not None: addresses += [info.broadcast]
+                elif info.address is not None and info.netmask is not None:
+                    addresses += [broadcast_address(info.address,info.netmask)]
+                elif info.address is not None:
+                    addresses += [info.address]
+                    netmask = "255.255.254.0" # hack for NIH/LCP
+                    addresses += [broadcast_address(info.address,netmask)]
+    addresses = list(set(addresses)) # eliminate duplicates
+    return addresses
 
+def broadcast_address(address,netmask):
+    """
+    address: e.g. '128.231.5.169'
+    netmask: e.g. '255.255.254.0'
+    return value: e.g. '128.231.5.255'
+    """
+    from socket import inet_aton,inet_ntoa
+    from struct import unpack,pack
+    address_bits = unpack("!I",inet_aton(address))[0]
+    netmask_bits = unpack("!I",inet_aton(netmask))[0]
+    broadcast_address_bits = address_bits | ~netmask_bits
+    broadcast_address_bits = uint32_from_int32(broadcast_address_bits)
+    broadcast_address = inet_ntoa(pack('!I',broadcast_address_bits))
+    return broadcast_address
+
+def uint32_from_int32(value):
+  """The unsigned 32-bit integer that is stored using bit-by-bit the same
+  binary data as the givien signed 32-bit integer"""
+  if value < 0: value = value+0x100000000
+  return value
+
+def broadcast_addresses_standard():
+    """A list if IP adresses to use for name resolution broadcasts"""
     from socket import inet_aton,inet_ntoa,error
     from struct import pack,unpack
     addresses = []
@@ -965,7 +1373,10 @@ def network_interfaces():
     as strings in numerical dot notation"""
     from socket import getaddrinfo,gethostname
     addresses = [local_ip_address()]
-    for addrinfo in getaddrinfo(None,0)+getaddrinfo(gethostname(),0):
+    addrinfos = getaddrinfo(None,0)
+    try: addrinfos += getaddrinfo(gethostname(),0)
+    except: pass
+    for addrinfo in addrinfos:
         address = addrinfo[4][0]
         if not address in addresses: addresses += [address]
     return addresses
@@ -987,72 +1398,105 @@ def local_ip_address():
     address,port = s.getsockname()
     return address
 
-def cainfo(PV_name="all",printit=True,update=True):
-    "Print status info string"
+def cainfo(PV_name="all",property=None,printit=None,update=True,timeout=None):
+    """Print status info string"""
     from socket import gethostbyaddr,herror
     from datetime import datetime
     from time import time
 
-    if PV_name == "all":
-        for name in PVs: cainfo(name,update=False)
-    else:
-        if update: caget(PV_name)
+    if printit is None: printit = True if property is None else False
 
-        s = PV_name+"\n"
+    if PV_name == "all":
+        for name in PVs: cainfo(name,printit=printit,update=update)
+    else:
+        if update: caget(PV_name,timeout)
         if PV_name in PVs: pv = PVs[PV_name]
         else: pv = PV_info()
 
-        fmt = "    %-14s %.60s\n"
+        if property is not None:
+            if type(property) == str: properties = [property]
+            else: properties = property
+            values = []
+            for prop in properties:
+                val = None
+                if prop == "IP_address":
+                    val = pv.addr[0] if pv.addr else ""
+                if prop == "hostname":
+                    val = pv.addr[0] if pv.addr else ""
+                    # Try to translate numeric IP address to host name.
+                    try: val = gethostbyaddr(val)[0]
+                    except herror: pass
+                if prop == "timestamp":
+                    if has_timestamp(pv.data_type,pv.data):
+                        val = timestamp(pv.data_type,pv.data)
+                    else: val = pv.last_updated
+                if prop == "value":
+                    if pv.data != None:
+                        val = value(pv.data_type,pv.data_count,pv.data)
+                values += [val]
+            if type(property) == str: values = values[0]
+            s = values
+                
+        if property is None: # general report
+            s = PV_name+"\n"
 
-        if pv.channel_SID: val = "connected"
-        else: val = "not connected"
-        if pv.subscription_ID: val += ", receiving notifications"
-        if pv.connection_requested and not pv.subscription_ID:
-            val += ", pending for %.0f s" % (time() - pv.connection_requested)
-        s += fmt % ("State:",val)
-        
-        if pv.addr:
-            val = pv.addr[0]
-            # Try to translate numeric IP address to host name.
-            try: val = gethostbyaddr(val)[0]
-            except herror: pass
-            val += ":%s" % pv.addr[1]
-        else: val = "N/A"
-        s += fmt % ("Host:",val)
+            fmt = "    %-14s %.60s\n"
 
-        if pv.access_bits != None:
-            val = ""
-            if pv.access_bits & 1: val += "read/"
-            if pv.access_bits & 2: val += "write/"
-            val = val.strip("/")
-            if val == "": val = "none"
-        else: val = "N/A"
-        s += fmt % ("Access:",val)
-        
-        if pv.data_type != None:
-            val = repr(pv.data_type)
-            for t in types:
-                if types[t] == pv.data_type: val = t
-        else: val = "N/A"
-        s += fmt % ("Data type:",val)
+            if pv.channel_SID: val = "connected"
+            else: val = "not connected"
+            if pv.subscription_ID: val += ", receiving notifications"
+            if pv.connection_requested and not pv.subscription_ID:
+                val += ", pending for %.0f s" % (time() - pv.connection_requested)
+            s += fmt % ("State:",val)
+            
+            if pv.addr:
+                val = pv.addr[0]
+                # Try to translate numeric IP address to host name.
+                try: val = gethostbyaddr(val)[0]
+                except herror: pass
+                val += ":%s" % pv.addr[1]
+            else: val = "N/A"
+            s += fmt % ("Host:",val)
 
-        if pv.data_count != None: val = str(pv.data_count)
-        else: val = "N/A"
-        s += fmt % ("Element count:",val)
+            if pv.access_bits != None:
+                val = ""
+                if pv.access_bits & 1: val += "read/"
+                if pv.access_bits & 2: val += "write/"
+                val = val.strip("/")
+                if val == "": val = "none"
+            else: val = "N/A"
+            s += fmt % ("Access:",val)
+            
+            if pv.data_type != None:
+                val = repr(pv.data_type)
+                for t in types:
+                    if types[t] == pv.data_type: val = t
+            else: val = "N/A"
+            s += fmt % ("Data type:",val)
 
-        if pv.data != None: val = repr(value(pv.data_type,pv.data_count,pv.data))
-        else: val = "N/A"
-        s += fmt % ("Value:",val)
+            if pv.data_count != None: val = str(pv.data_count)
+            else: val = "N/A"
+            s += fmt % ("Element count:",val)
 
-        if pv.last_updated != 0:
-            t = pv.last_updated
-            val = "%s (%s)" % (t,datetime.fromtimestamp(t))
-            s += fmt % ("Last changed:",val)
+            if pv.data != None: val = repr(value(pv.data_type,pv.data_count,pv.data))
+            else: val = "N/A"
+            s += fmt % ("Value:",val)
 
-        if pv.response_time != 0:
-            t = pv.response_time
-            val = "%s (%s)" % (t,datetime.fromtimestamp(t))
-            s += fmt % ("Time stamp:",val)
+            if pv.last_updated != 0 and pv.last_updated != timestamp(pv.data_type,pv.data):
+                t = pv.last_updated
+                val = "%s (%s)" % (t,datetime.fromtimestamp(t))
+                s += fmt % ("Last changed:",val)
+
+            if has_timestamp(pv.data_type,pv.data):
+                t = timestamp(pv.data_type,pv.data)
+                val = "%s (%s)" % (t,datetime.fromtimestamp(t))
+                s += fmt % ("Time stamp:",val)
+
+            if pv.response_time != 0:
+                t = pv.response_time
+                val = "%s (%s)" % (t,datetime.fromtimestamp(t))
+                s += fmt % ("Response time:",val)
+
 
         if printit: print(s)
         else: return s
@@ -1067,25 +1511,28 @@ def PV_status():
         s = s.strip(", ")
         print(s)
 
-def logfile():
-    """File name for diagnostics messages."""
-    from tempfile import gettempdir
-    return gettempdir()+"/CA.log"
-
 if __name__ == "__main__": # for testing
     from pdb import pm
-    from time import time
+    from time import time,sleep
     import logging
-    logging.basicConfig(level=logging.DEBUG,format="%(asctime)s: %(message)s",
-        filename=logfile())
-    ##DEBUG = True
-    PV_name = "14IDA:DAC1_4.VAL"
+    from tempfile import gettempdir
+    logfile = gettempdir()+"/CA.log"
+    logging.basicConfig(level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s: %(message)s",
+        ##filename=logfile,
+    )
+    DEBUG = False
     print('DEBUG = %r' % DEBUG)
-    print('monitor_always = %r' % monitor_always)
-    print('caget(%r)' % PV_name)
-    ##print('t=time(); x=caget(%r); time()-t,x' % PV_name)
-    print('caput(%r,4.8372)' % PV_name)
-    ##print('t=time(); caput(%r,4.8372); time()-t' % PV_name)
-    print('camonitor(%r)' % PV_name)
-    print('camonitor_clear(%r)' % PV_name)
-    print('cawait(%r,20)' % PV_name)
+
+    PV_names = [
+        ##'TESTBENCH:TIMING.registers.ch1_trig_count.count',
+        'TESTBENCH:TIMING.registers.ver.count',
+        'NIH:CONF.CONFIGURATION_NAMES',
+        'NIH:LIGHTWAVE.VAL',
+        'NIH:SAMPLEX.VAL',
+    ]
+
+    for PV_name in PV_names: print('caget(%r)' % PV_name)
+    print("camonitor('TESTBENCH:TIMING.registers.ch1_trig_count.count')")
+    
+    
