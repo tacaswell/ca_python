@@ -667,7 +667,7 @@ def PV_server_discover(PV_name):
         reply_flag = 5  # Do not reply
         if pv.channel_ID == None:
             pv.channel_ID = new_channel_ID()
-        request = message(
+        request = message(VERSION, 0, 10, minor_version, 0, 0) + message(
             SEARCH,
             0,
             reply_flag,
