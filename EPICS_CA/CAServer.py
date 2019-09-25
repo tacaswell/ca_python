@@ -49,6 +49,15 @@ variable with three arguments:
 - the new value
 - the new value as string
 """
+from __future__ import division
+from __future__ import print_function
+from future import standard_library
+standard_library.install_aliases()
+from builtins import zip
+from builtins import str
+from past.builtins import basestring
+from past.utils import old_div
+from builtins import object
 from logging import debug,info,warn,error
 
 __version__ = "1.5.1" # EPICS 3.16 compatibility: Read request have data_count=0
@@ -73,7 +82,7 @@ def unregister_object(object=None,name=None):
         for (o,n) in registered_objects:
             if o is object: name = n
     if name is not None:    
-        for PV_name in PVs.keys():
+        for PV_name in list(PVs.keys()):
             if PV_name.startswith(name): delete_PV(PV_name)
     if object is not None:
         registered_objects = [(o,n) for (o,n) in registered_objects if not o is object]
@@ -99,13 +108,13 @@ def unregister_property(object=None,property_name=None,PV_name=None):
     elif PV_name is not None:
         if PV_name in registered_properties: del registered_properties[PV_name]
     elif object is not None and property_name is not None:
-        for key in registered_properties.keys():
+        for key in list(registered_properties.keys()):
             if registered_properties[key] == (object,property_name):
                 del registered_properties[key]
 
 def casdel(name):
     """Undo 'casput'"""
-    for PV_name in PVs.keys():
+    for PV_name in list(PVs.keys()):
         if PV_name.startswith(name): delete_PV(PV_name)
 
 class PV(object):
@@ -150,7 +159,7 @@ def casput(PV_name,value,update=True):
     """
     if DEBUG: debug("casput(%r,%r)" % (PV_name,value))
     start_server()
-    if not PV_name in PVs.keys(): PVs[PV_name] = PV_info()
+    if not PV_name in list(PVs.keys()): PVs[PV_name] = PV_info()
     PV = PVs[PV_name]
     if PV_value(PV_name) != value or update: PV_set_value(PV_name,value)
 CAServer_put = casput
@@ -173,7 +182,7 @@ def casmonitor(PV_name,writer=None,callback=None):
     def callback(pvname,value,char_value): print pvname,value,char_value
     """
     start_server()
-    if not PV_name in PVs.keys(): PVs[PV_name] = PV_info()
+    if not PV_name in list(PVs.keys()): PVs[PV_name] = PV_info()
     PV = PVs[PV_name]
     if callback is None and writer is None:
         # By default, if not argument are given, just print update messages.
@@ -186,7 +195,7 @@ def casmonitor(PV_name,writer=None,callback=None):
         if not writer in PV.writers: PV.writers += [writer]
 CAServer_monitor = casmonitor
 
-class PV_info:
+class PV_info(object):
     """State information for each process variable"""
     def __init__(self):
         self.value = None # current value in Python format
@@ -198,7 +207,7 @@ class PV_info:
 
 PVs = {} # Active process variables, indexed by name
 
-class subscriber_info:
+class subscriber_info(object):
     """State information for each active connection to a process variable"""
     def __init__(self,subscription_ID=None,data_type=None,data_count=None):
         """subscription_ID: client-assigned number for EVENT_ADD updates""" 
@@ -208,7 +217,7 @@ class subscriber_info:
 
 cache = {} # values of PVs
 cache_timeout = 1.0
-class cache_entry():
+class cache_entry(object):
     def __init__(self,value,time):
         self.value = value
         self.time = time
@@ -256,11 +265,11 @@ def PV_value_or_object(PV_name):
     if PV_name in registered_properties:
         object,property_name = registered_properties[PV_name]
         try: return getattr(object,property_name)
-        except Exception,msg:
+        except Exception as msg:
             error("%s: %r.%s: %s" % (PV_name,object,property_name,msg))
     record = object_instance(PV_name)
     if record: return getattr(record,object_property(PV_name))
-    if PV_name in PVs.keys(): return PVs[PV_name].value
+    if PV_name in list(PVs.keys()): return PVs[PV_name].value
     return None
 
 def isobject(x):
@@ -294,7 +303,7 @@ def PV_set_value(PV_name,value):
             attribute = PV_name[len(name+"."):]
             PV_object_name = "object."+attribute
             try: PV_object = eval(PV_object_name)
-            except Exception,exception:
+            except Exception as exception:
                 if DEBUG: debug("%s: %s" % (PV_object_name,exception))
                 continue
             if hasattr(PV_object,"value"): 
@@ -304,7 +313,7 @@ def PV_set_value(PV_name,value):
                     exec(code)
                     if DEBUG: debug("Tried %s: OK" % code.replace("object",name))
                     continue
-                except Exception,exception:
+                except Exception as exception:
                     if DEBUG: debug("Tried %s: failed: %s" % (code,exception))
             else:
                 if not ("." in attribute or "[" in attribute):
@@ -312,7 +321,7 @@ def PV_set_value(PV_name,value):
                         setattr(object,attribute,value)
                         if DEBUG: debug("Tried setattr(%s,%s,%r): OK" %
                             (name,attribute,value))
-                    except Exception,exception:
+                    except Exception as exception:
                         if DEBUG: debug("Tried setattr(%s,%s,%r): %s" %
                             (name,attribute,value,exception))
                 else:
@@ -322,17 +331,17 @@ def PV_set_value(PV_name,value):
                         exec(code)
                         if DEBUG: debug("Tried %s: OK" % code.replace("object",name))
                         continue
-                    except Exception,exception:
+                    except Exception as exception:
                         if DEBUG: debug("Tried %s: failed: %s" % (code,exception))
     if PV_name in registered_properties:
         object,property_name = registered_properties[PV_name]
         try: setattr(object,property_name,value)
-        except Exception,msg:
+        except Exception as msg:
             error("%s: %r.%s = %r: %s",(PV_name,object,property_name,value,msg))
     record = object_instance(PV_name)
     if record:
         setattr(record,object_property(PV_name),value)
-    if not PV_name in PVs.keys(): PVs[PV_name] = PV_info()
+    if not PV_name in list(PVs.keys()): PVs[PV_name] = PV_info()
     PV = PVs[PV_name]
     PV.value = value
     from time import time
@@ -342,7 +351,7 @@ def PV_set_value(PV_name,value):
 
 def call_callbacks(PV_name):
     """Call any callback routines for this PV."""
-    if not PV_name in PVs.keys(): return
+    if not PV_name in list(PVs.keys()): return
     PV = PVs[PV_name]
     if len(PV.callbacks) > 0:
         char_value = "%r" % PV.value
@@ -367,9 +376,9 @@ def call_callbacks(PV_name):
 def PV_subscribers(PV_name):
     """IP address/ports of clients are connected to a process variable.
     Return value: list of (string,integer) tuples"""
-    if not PV_name in PVs.keys(): return []
+    if not PV_name in list(PVs.keys()): return []
     PV = PVs[PV_name]
-    return PV.subscribers.keys()
+    return list(PV.subscribers.keys())
 
 def PV_nsubscribers(PV_name):
     """How many clients are connected to a process variable?"""
@@ -383,7 +392,7 @@ def notify_subscribers_if_changed(PV_name,new_value):
     """Send update events to all client monitoring the given process variable
     if the new value is different than the current value"""
     ##if DEBUG: debug("notify_subscribers_if_changed(%r,%r)" % (PV_name,new_value))
-    if not PV_name in PVs.keys(): return
+    if not PV_name in list(PVs.keys()): return
     PV = PVs[PV_name]
     if new_value is None:
         if DEBUG: info("CA: notify_subscribers_if_changed: %s = %s" % (PV_name,new_value))
@@ -398,7 +407,7 @@ def notify_subscribers_if_changed(PV_name,new_value):
     PV.value = new_value
     from time import time
     PV.last_updated = time()
-    for address in PV.subscribers.keys():
+    for address in list(PV.subscribers.keys()):
         # Notify connected clients that process variable has changed.
         subscriber = PV.subscribers[address]
         # Make sure client is interested in receiving update notifications.
@@ -415,14 +424,14 @@ def notify_subscribers_if_changed(PV_name,new_value):
 
 def notify_subscribers(PV_name):
     """Send update events to all client monitoring the given process variable"""
-    if not PV_name in PVs.keys(): return
+    if not PV_name in list(PVs.keys()): return
     PV = PVs[PV_name]
     value = PV_value(PV_name)
     if value is None:
         if DEBUG: info("CA: notify_subscribers: %s=%r" % (PV_name,value))
         ##delete_PV(PV_name)
         return
-    for address in PV.subscribers.keys():
+    for address in list(PV.subscribers.keys()):
         if not address in PV.subscribers: continue
         # Notify connected clients that process variable has changed.
         subscriber = PV.subscribers[address]
@@ -447,9 +456,9 @@ def delete_PV(PV_name):
 def disconnect_PV(PV_name):
     """Notify subscribers that PV no longer exists."""
     ##if DEBUG: debug("notify_subscribers_if_changed(%r,%r)" % (PV_name,new_value))
-    if not PV_name in PVs.keys(): return
+    if not PV_name in list(PVs.keys()): return
     PV = PVs[PV_name]
-    for address in PV.subscribers.keys():
+    for address in list(PV.subscribers.keys()):
         # Notify connected clients that process variable has changed.
         subscriber = PV.subscribers[address]
         # Make sure client is interested in receiving update notifications.
@@ -479,7 +488,7 @@ def PV_names():
 def connected_PVs():
     """All currently active process variables, with clients connected to them.
     Return value: ist of strings"""
-    return [PV_name for PV_name in PVs.keys() if PV_connected(PV_name)]
+    return [PV_name for PV_name in list(PVs.keys()) if PV_connected(PV_name)]
 
 def update_all_PVs():
     """Send update events to all connected clients for the PVs which have
@@ -552,8 +561,8 @@ commands = {
 
 def command_name(command_code):
     """'VERSION', 'EVENT_ADD',.... """
-    if not command_code in commands.values(): return str(command_code)
-    return commands.keys()[commands.values().index(command_code)]
+    if not command_code in list(commands.values()): return str(command_code)
+    return list(commands.keys())[list(commands.values()).index(command_code)]
 
 # CA Payload Data Types:
 
@@ -597,8 +606,8 @@ types = {
 
 def type_name(data_type):
     """Channel Access data type as string. data_type: integer number"""
-    if not data_type in types.values(): return str(data_type)
-    return types.keys()[types.values().index(data_type)]
+    if not data_type in list(types.values()): return str(data_type)
+    return list(types.keys())[list(types.values()).index(data_type)]
 
 # Return status codes
 status_codes = {
@@ -716,9 +725,9 @@ def start_server():
     task.daemon = True
     task.start()
 
-import SocketServer
+import socketserver
 
-class UDPServer(SocketServer.UDPServer,SocketServer.ThreadingMixIn):
+class UDPServer(socketserver.UDPServer,socketserver.ThreadingMixIn):
     """UPD server with customized socket options"""
     # No long timeout for restarting the server ("port in use")
     allow_reuse_address = True
@@ -747,7 +756,7 @@ class UDPServer(SocketServer.UDPServer,SocketServer.ThreadingMixIn):
         self.socket.bind(self.server_address)
         self.server_address = self.socket.getsockname()
 
-class ThreadingTCPServer(SocketServer.ThreadingTCPServer,SocketServer.ThreadingMixIn):
+class ThreadingTCPServer(socketserver.ThreadingTCPServer,socketserver.ThreadingMixIn):
     # No long timeout for restarting the server ("port in use")
     import os
     if os.name == "nt": allow_reuse_address = False # Windows
@@ -755,7 +764,7 @@ class ThreadingTCPServer(SocketServer.ThreadingTCPServer,SocketServer.ThreadingM
     # Ctrl-C will cleanly kill all spawned threads
     daemon_threads = True
 
-class UDPHandler(SocketServer.BaseRequestHandler):
+class UDPHandler(socketserver.BaseRequestHandler):
     def handle(self):
         addr = "%s:%d" % self.client_address
         from socket import error as socket_error
@@ -776,7 +785,7 @@ class UDPHandler(SocketServer.BaseRequestHandler):
 
 connections = {} # list of active client TCP connections
 
-class TCPHandler(SocketServer.BaseRequestHandler):
+class TCPHandler(socketserver.BaseRequestHandler):
     def handle(self):
         addr = "%s:%d" % self.client_address
         if DEBUG: debug("%s: accepted connection" % addr)
@@ -812,7 +821,7 @@ class TCPHandler(SocketServer.BaseRequestHandler):
                 except socket.error:
                     if DEBUG: debug("%s: lost connection\n" % addr)
         # Update list of active client connections.
-        for PV in PVs.values():
+        for PV in list(PVs.values()):
             if self.client_address in PV.subscribers:
                 del PV.subscribers[self.client_address]
         del connections[self.client_address]
@@ -869,13 +878,13 @@ def process_message(address,request):
         if DEBUG: debug("CREATE_CHAN channel_CID=%r, minor_version=%r" %
             (channel_CID,minor_version))
         if not PV_exists(channel_name): return
-        if not channel_name in PVs.keys(): PVs[channel_name] = PV_info()
+        if not channel_name in list(PVs.keys()): PVs[channel_name] = PV_info()
         PV = PVs[channel_name]
         val = PV_value(channel_name)
         data_type = CA_type(val)
         data_count = CA_count(val)
         if PV.channel_SID == None:
-            channel_SIDs = [pv.channel_SID for pv in PVs.values()]
+            channel_SIDs = [pv.channel_SID for pv in list(PVs.values())]
             PV.channel_SID = 1
             while PV.channel_SID in channel_SIDs: PV.channel_SID += 1
         reply = message("CREATE_CHAN",0,data_type,data_count,channel_CID,
@@ -896,7 +905,7 @@ def process_message(address,request):
         IOID = parameter2
         if DEBUG: debug("READ_NOTIFY data_type=%r,data_count=%r,channel_SID=%r,IOID=%r"
             % (data_type,data_count,channel_SID,IOID))
-        for PV_name in PVs.keys():
+        for PV_name in list(PVs.keys()):
             PV = PVs[PV_name]
             if PV.channel_SID == channel_SID:
                 status_code = 1 # Normal successful completion
@@ -916,7 +925,7 @@ def process_message(address,request):
             "payload={low_val:%r, high_val:%r, to_val:%r, mask:%r}"
             % (type_name(data_type),data_count,channel_SID,subscription_ID,
             low_val,high_val,to_val,mask))
-        for PV_name in PVs.keys():
+        for PV_name in list(PVs.keys()):
             PV = PVs[PV_name]
             if PV.channel_SID == channel_SID:
                 PV.subscribers[address] = \
@@ -938,7 +947,7 @@ def process_message(address,request):
         if DEBUG: debug("WRITE_NOTIFY data_type=%r, data_count=%r, channel_SID=%r, "\
             "IOID=%r, value=%r\n" %
             (data_type,data_count,channel_SID,IOID,new_value))
-        for PV_name in PVs.keys():
+        for PV_name in list(PVs.keys()):
             PV = PVs[PV_name]
             if PV.channel_SID == channel_SID:
                 if DEBUG: debug("Changing %r to %r\n" % (PV_name,new_value))
@@ -962,7 +971,7 @@ def process_message(address,request):
         if DEBUG: debug("WRITE data_type=%r, data_count=%r, channel_SID=%r, "\
             "IOID=%r, value=%r\n" %
             (data_type,data_count,channel_SID,IOID,new_value))
-        for PV_name in PVs.keys():
+        for PV_name in list(PVs.keys()):
             PV = PVs[PV_name]
             if PV.channel_SID == channel_SID:
                 if DEBUG: debug("Changing %r to %r\n" % (PV_name,new_value))
@@ -979,7 +988,7 @@ def process_message(address,request):
         if DEBUG: debug("EVENT_CANCEL {data_type:%s,data_count:%r, "\
             "channel_SID:%r,subscription_ID:%r},"
             % (type_name(data_type),data_count,channel_SID,subscription_ID))
-        for PV_name in PVs.keys():
+        for PV_name in list(PVs.keys()):
             PV = PVs[PV_name]
             if PV.channel_SID == channel_SID:
                 if address in PV.subscribers and \
@@ -1042,8 +1051,8 @@ def message_info(message):
     if command: s += "("+command+")"
     s += ","+str(payload_size)
     s += ","+str(data_type)
-    if data_type in types.values():
-        s += "("+types.keys()[types.values().index(data_type)]+")"
+    if data_type in list(types.values()):
+        s += "("+list(types.keys())[list(types.values()).index(data_type)]+")"
     s += ","+str(data_count)
     s += ", %r, %r" % (parameter1,parameter2)
     if payload:
@@ -1064,7 +1073,7 @@ def send(socket,message):
     if DEBUG: debug("Send %s %s\n" % (addr,message_info(message)))
     ##socket.setblocking(0)
     try: socket.sendall(message)
-    except socket_error,error:
+    except socket_error as error:
         if DEBUG: debug("Send failed %r\n" % error)
 
 def value(data_type,data_count,payload):
@@ -1118,32 +1127,32 @@ def value(data_type,data_count,payload):
         value = payload.split("\0")[0:data_count]
         if len(value) == 1: value = value[0]
     elif data_type.endswith("SHORT"):
-        if data_count > len(payload)/2: data_count = max(len(payload)/2,1)
+        if data_count > old_div(len(payload),2): data_count = max(old_div(len(payload),2),1)
         payload = payload.ljust(2*data_count,"\0")
         value = list(unpack(">%dh"%data_count,payload[0:2*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("FLOAT"):
-        if data_count > len(payload)/4: data_count = max(len(payload)/4,1)
+        if data_count > old_div(len(payload),4): data_count = max(old_div(len(payload),4),1)
         payload = payload.ljust(4*data_count,"\0")
         value = list(unpack(">%df"%data_count,payload[0:4*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("ENUM"):
-        if data_count > len(payload)/2: data_count = max(len(payload)/2,1)
+        if data_count > old_div(len(payload),2): data_count = max(old_div(len(payload),2),1)
         payload = payload.ljust(2*data_count,"\0")
         value = list(unpack(">%dh"%data_count,payload[0:2*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("CHAR"):
-        if data_count > len(payload)/1: data_count = max(len(payload)/1,1)
+        if data_count > old_div(len(payload),1): data_count = max(old_div(len(payload),1),1)
         payload = payload.ljust(1*data_count,"\0")
         value = list(unpack("%db"%data_count,payload[0:1*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("LONG"):
-        if data_count > len(payload)/4: data_count = max(len(payload)/4,1)
+        if data_count > old_div(len(payload),4): data_count = max(old_div(len(payload),4),1)
         payload = payload.ljust(4*data_count,"\0")
         value = list(unpack(">%di"%data_count,payload[0:4*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("DOUBLE"):
-        if data_count > len(payload)/8: data_count = max(len(payload)/8,1)
+        if data_count > old_div(len(payload),8): data_count = max(old_div(len(payload),8),1)
         payload = payload.ljust(8*data_count,"\0")
         value = list(unpack(">%dd"%data_count,payload[0:8*data_count]))
         if len(value) == 1: value = value[0]
@@ -1254,7 +1263,7 @@ def convert(PV_name,value):
     elif not isarray(current_value):
         dtype = type(current_value)
         try: new_value = dtype(value)
-        except Exception,message:
+        except Exception as message:
             if DEBUG: debug("convert: %r from %r to %r failed: %r" %
                 (PV_name,value,dtype,message))
             new_value = dtype()
@@ -1264,7 +1273,7 @@ def convert(PV_name,value):
         if len(current_value) > 0: dtype = type(current_value[0])
         else: dtype = float
         try: new_value = [dtype(x) for x in value]
-        except Exception,message:
+        except Exception as message:
             if DEBUG: debug("convert: %r from %r to %r failed: %r" %
                 (PV_name,value,dtype,message))
             new_value = [dtype()]*len(value)

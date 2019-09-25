@@ -32,6 +32,13 @@ To do:
   (EPICS R3.12 Channel Access Reference Manual,
   Chapter 1.3.2 Configuring CA for Multiple Subnets)
 """
+from __future__ import division
+from __future__ import print_function
+from future import standard_library
+standard_library.install_aliases()
+from builtins import str
+from past.utils import old_div
+from builtins import object
 __version__ = "3.3.1" # Python 3: using "bytes" for binary data
 
 __authors__ = ["Friedrich Schotte"]
@@ -46,7 +53,7 @@ timeout = 1.0 # s
 DEBUG = False # Generate diagnostics messages?
 monitor_always = True # run server communication alsways in background
 
-class PV_info:
+class PV_info(object):
     """State information for each process variable"""
     def __init__(self):
         from time import time
@@ -102,7 +109,7 @@ class PV_info:
     
 PVs = {} # Unique list of active process variables
 
-class connection_info:
+class connection_info(object):
     """Per CA server (IOC) state information"""
     def __init__(self):
         self.socket = None
@@ -154,8 +161,8 @@ commands = {
 
 def command_name(command_code):
     """'VERSION', 'EVENT_ADD',.... """
-    if not command_code in commands.values(): return str(command_code)
-    return commands.keys()[commands.values().index(command_code)]
+    if not command_code in list(commands.values()): return str(command_code)
+    return list(commands.keys())[list(commands.values()).index(command_code)]
 
 VERSION = 0
 EVENT_ADD = 1
@@ -212,7 +219,7 @@ types = {
 
 def type_name(data_type):
     """Channel Access data type as string. data_type: integer number"""
-    if not data_type in types.values(): return str(data_type)
+    if not data_type in list(types.values()): return str(data_type)
     return list(types.keys())[list(types.values()).index(data_type)]
 
 def type_code(name):
@@ -441,8 +448,8 @@ def camonitor_clear(PV_name,writer=None,callback=None):
 def camonitors(PV_name=None):
     """Which monotors are set to a PV?
     List of active callback functions"""
-    if PV_name is not None: PV_names = [PV_name] if PV_name in PVs.keys() else []
-    else: PV_names = PVs.keys()
+    if PV_name is not None: PV_names = [PV_name] if PV_name in list(PVs.keys()) else []
+    else: PV_names = list(PVs.keys())
     
     camonitors = []
     for PV_name in PV_names: 
@@ -643,7 +650,7 @@ def process_replies(timeout=0.0000001,update=False):
             sockets = []
             if request_sockets[1]: sockets += [request_sockets[1]]
             if UDP_socket: sockets += [UDP_socket]
-            for connection in connections.values(): sockets += [connection.socket]
+            for connection in list(connections.values()): sockets += [connection.socket]
             try: ready_to_read,x,in_error = select(sockets,[],sockets,timeout)
             except select_error: continue # 'Interrupted system call'
 
@@ -672,7 +679,7 @@ def process_replies(timeout=0.0000001,update=False):
             if UDP_socket in in_error:
                 if DEBUG: debug("UDP error")
 
-            for addr in connections.keys():
+            for addr in list(connections.keys()):
                 connection = connections[addr]
                 s = connection.socket
                 if s in in_error:
@@ -954,7 +961,7 @@ def new_channel_ID():
     """Return a unique integer to be used as 'Channel ID' for a PV.
     A Channel ID is a client-provided integer number, which the CA server (IOC)
     includes as reference when replying to 'create channel' requests."""
-    IDs = [pv.channel_ID for pv in PVs.values()]
+    IDs = [pv.channel_ID for pv in list(PVs.values())]
     ID = 1
     while ID in IDs: ID += 1
     return ID
@@ -963,7 +970,7 @@ def new_subscription_ID():
     """Return a unique integer to be used as 'Subscription ID' for a PV.
     A subscription ID is a client-provided integer number, which  the CA server
     (IOC) includes as reference number when sending update events."""
-    IDs = [pv.subscription_ID for pv in PVs.values()]
+    IDs = [pv.subscription_ID for pv in list(PVs.values())]
     ID = 1
     while ID in IDs: ID += 1
     return ID
@@ -1014,12 +1021,12 @@ def message_info(message):
     command,payload_size,data_type,data_count,parameter1,parameter2 = \
         unpack(">HHHHII",header)
     s = str(command)
-    if command in commands.values():
-        s += "("+commands.keys()[commands.values().index(command)]+")"
+    if command in list(commands.values()):
+        s += "("+list(commands.keys())[list(commands.values()).index(command)]+")"
     s += ","+str(payload_size)
     s += ","+str(data_type)
-    if data_type in types.values():
-        s += "("+types.keys()[types.values().index(data_type)]+")"
+    if data_type in list(types.values()):
+        s += "("+list(types.keys())[list(types.values()).index(data_type)]+")"
     s += ","+str(data_count)
     s += ", %r, %r" % (parameter1,parameter2)
     if payload:
@@ -1126,32 +1133,32 @@ def value(data_type,data_count,payload):
         value = payload.split(b"\0")[0:data_count]
         if len(value) == 1: value = value[0]
     elif data_type.endswith("SHORT"):
-        if data_count > len(payload)/2: data_count = max(len(payload)/2,1)
+        if data_count > old_div(len(payload),2): data_count = max(old_div(len(payload),2),1)
         payload = payload.ljust(2*data_count,b"\0")
         value = list(unpack(">%dh"%data_count,payload[0:2*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("FLOAT"):
-        if data_count > len(payload)/4: data_count = max(len(payload)/4,1)
+        if data_count > old_div(len(payload),4): data_count = max(old_div(len(payload),4),1)
         payload = payload.ljust(4*data_count,b"\0")
         value = list(unpack(">%df"%data_count,payload[0:4*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("ENUM"):
-        if data_count > len(payload)/2: data_count = max(len(payload)/2,1)
+        if data_count > old_div(len(payload),2): data_count = max(old_div(len(payload),2),1)
         payload = payload.ljust(2*data_count,b"\0")
         value = list(unpack(">%dh"%data_count,payload[0:2*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("CHAR"):
-        if data_count > len(payload)/1: data_count = max(len(payload)/1,1)
+        if data_count > old_div(len(payload),1): data_count = max(old_div(len(payload),1),1)
         payload = payload.ljust(1*data_count,b"\0")
         value = list(unpack("%db"%data_count,payload[0:1*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("LONG"):
-        if data_count > len(payload)/4: data_count = max(len(payload)/4,1)
+        if data_count > old_div(len(payload),4): data_count = max(old_div(len(payload),4),1)
         payload = payload.ljust(4*data_count,b"\0")
         value = list(unpack(">%di"%data_count,payload[0:4*data_count]))
         if len(value) == 1: value = value[0]
     elif data_type.endswith("DOUBLE"):
-        if data_count > len(payload)/8: data_count = max(len(payload)/8,1)
+        if data_count > old_div(len(payload),8): data_count = max(old_div(len(payload),8),1)
         payload = payload.ljust(8*data_count,b"\0")
         value = list(unpack(">%dd"%data_count,payload[0:8*data_count]))
         if len(value) == 1: value = value[0]
