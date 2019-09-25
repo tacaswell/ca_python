@@ -516,7 +516,7 @@ def camonitor_background():
     """Handle IOC communication in background"""
     from threading import Thread
     global camonitor_thread
-    if camonitor_thread is None or not camonitor_thread.isAlive():
+    if camonitor_thread is None or not camonitor_thread.is_alive():
         camonitor_thread = Thread(target=camonitor_loop)
         camonitor_thread.daemon = True
         camonitor_thread.start()
